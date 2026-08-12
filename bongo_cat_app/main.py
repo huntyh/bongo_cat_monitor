@@ -5,6 +5,15 @@ Fixed threading model - Engine ALWAYS runs on main thread for proper keyboard ti
 """
 
 import sys
+import os
+
+# Force UTF-8 encoding for Windows console to support emojis
+os.environ['PYTHONUTF8'] = '1'
+if sys.stdout:
+    sys.stdout.reconfigure(encoding='utf-8')
+if sys.stderr:
+    sys.stderr.reconfigure(encoding='utf-8')
+
 import signal
 import argparse
 import threading
