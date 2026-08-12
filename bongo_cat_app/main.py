@@ -18,6 +18,7 @@ import signal
 import argparse
 import threading
 import time
+from pynput import keyboard
 from config import ConfigManager
 from engine import BongoCatEngine
 from tray import BongoCatSystemTray
@@ -116,27 +117,104 @@ class BongoCatApplication:
             print("💡 Settings window available from tray menu")
             print("🎯 Starting animation engine on MAIN THREAD for optimal responsiveness...")
             
-            # CRITICAL FIX: Engine ALWAYS runs on main thread (like original script)  
+            # CRITICAL FIX: Engine ALWAYS runs on main thread (like original script)
             # This ensures proper keyboard listener timing regardless of start mode
-            self.engine.start_monitoring()
+            monitoring_started = self.engine.start_monitoring()
+            
+            if not monitoring_started:
+                # Serial connection failed - keep tray alive and retry in background
+                print("\n⚠️ ESP32 not available - keeping tray alive for background retry...")
+                print("🔄 Will retry connection every 10 seconds")
+                print("🖱️ Right-click tray icon for manual reconnect options")
+                self._start_background_retry()
+            else:
+                # Normal flow - start_monitoring() is blocking (keyboard listener.join())
+                # When it returns, we fall through to shutdown
+                pass
                 
         except KeyboardInterrupt:
             print("\n🛑 Interrupted by user")
         except Exception as e:
             print(f"❌ Runtime error: {e}")
+            import traceback
+            traceback.print_exc()
             return 1
         finally:
             self.shutdown()
         
         return 0
-    
 
+    def _start_background_retry(self):
+        """Start background retry loop when ESP32 is unavailable.
+        Keeps the tray alive and periodically attempts to reconnect."""
+        retry_interval = 10  # seconds
+        self.engine._retry_stop_event = threading.Event()
+        self.engine._retry_running = True
+        
+        # Update tray to show retry in progress
+        if self.tray:
+            self.tray.update_connection_status("connecting")
+        
+        def retry_loop():
+            attempt = 0
+            while not self.engine._retry_stop_event.is_set():
+                attempt += 1
+                # Show "connecting" status while waiting
+                if self.tray:
+                    self.tray.update_connection_status("connecting")
+                print(f"\n🔄 Retry attempt {attempt} in {retry_interval}s...")
+                if self.engine._retry_stop_event.wait(timeout=retry_interval):
+                    break  # Stop signal received
+                
+                # Force port re-scan each retry cycle so it doesn't stick to unplugged COM ports
+                self.engine.port = 'AUTO'
+                print("🔌 Attempting to reconnect to ESP32...")
+                if self.engine.connect_serial():
+                    print("✅ Connected! Starting monitoring...")
+                    self.engine._retry_running = False
+                    # Update tray status
+                    if self.tray:
+                        self.tray.update_connection_status("connected")
+                    # Start system monitor
+                    self.engine.start_system_monitor()
+                    # Start animation loop
+                    update_thread = threading.Thread(target=self.engine.update_animation_loop, daemon=True)
+                    update_thread.start()
+                    # Start keyboard listener (blocking)
+                    try:
+                        with keyboard.Listener(on_press=self.engine.on_key_press) as listener:
+                            listener.join()
+                    except KeyboardInterrupt:
+                        pass
+                    break
+                else:
+                    print("❌ Retry failed - port still unavailable")
+                    # Keep showing connecting status for next retry
+        
+        retry_thread = threading.Thread(target=retry_loop, daemon=True)
+        retry_thread.start()
+        
+        # Keep main thread alive for the tray to function
+        # Use a blocking wait that can be interrupted
+        while self.running:
+            try:
+                time.sleep(1)
+            except KeyboardInterrupt:
+                print("\n🛑 Interrupted by user")
+                break
     
     def shutdown(self):
         """Shutdown the application gracefully"""
+        if not self.running:
+            return  # Prevent double shutdown
+        
         print("🛑 Shutting down components...")
         
         self.running = False
+        
+        # Stop background retry thread if running
+        if self.engine and hasattr(self.engine, '_retry_stop_event'):
+            self.engine._retry_stop_event.set()
         
         # Stop engine first
         if self.engine:
