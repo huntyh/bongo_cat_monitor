@@ -12,6 +12,7 @@ import time
 from config import ConfigManager
 from engine import BongoCatEngine
 from tray import BongoCatSystemTray
+import startup_manager
 
 class BongoCatApplication:
     """Main Bongo Cat application with FIXED thread-safe GUI"""
@@ -40,11 +41,18 @@ class BongoCatApplication:
             # Initialize configuration manager
             print("📂 Loading configuration...")
             self.config = ConfigManager()
-            
+
+            # Sync Windows registry with the config setting for "start with windows"
+            print("🔄 Syncing Windows startup registry...")
+            startup_settings = self.config.get_startup_settings()
+            start_with_windows = startup_settings.get('start_with_windows', True)
+            if not startup_manager.set_startup(start_with_windows):
+                print("⚠️ Warning: Could not sync Windows startup registry")
+
             # Initialize engine with configuration
             print("🔧 Initializing Bongo Cat Engine...")
             self.engine = BongoCatEngine(config_manager=self.config)
-            
+
             # Initialize system tray (but don't start it yet)
             print("📱 Setting up system tray...")
             self.tray = BongoCatSystemTray(
@@ -52,15 +60,15 @@ class BongoCatApplication:
                 engine=self.engine,
                 on_exit_callback=self.shutdown
             )
-            
+
             # Connect engine to tray for status updates
             self.engine.set_tray_reference(self.tray)
-            
+
             # Connect tray to config for settings refresh
             self.config.add_change_callback(self.tray.on_config_change)
-            
+
             return True
-            
+
         except Exception as e:
             print(f"❌ Initialization error: {e}")
             return False
