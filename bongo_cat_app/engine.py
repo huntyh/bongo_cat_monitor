@@ -191,6 +191,7 @@ class BongoCatEngine:
         # ENHANCED THREAD SYNCHRONIZATION - Protect both data and serial communication
         self._data_lock = threading.Lock()  # Protect shared data structures
         self._serial_lock = threading.Lock()  # CRITICAL: Protect serial port from thread conflicts
+        self._connect_mutex = threading.Lock()
         
         # Configuration change callbacks
         self.config_callbacks: Dict[str, Callable] = {}
@@ -364,67 +365,82 @@ class BongoCatEngine:
 
     def connect_serial(self, retries=3):
         """Connect to ESP32 via serial with retry logic - EXACT ORIGINAL IMPLEMENTATION"""
-        if self.port == 'AUTO' or not self.port:
-            detected_port = self.find_esp32_port()
-            if detected_port:
-                self.port = detected_port
-            else:
-                print("❌ Could not auto-detect ESP32. Please specify port manually.")
-                self._last_connection_error = FileNotFoundError("ESP32 not found")
-                self._report_connection_failure(self._last_connection_error)
-                return False
-        
-        for attempt in range(retries):
-            try:
-                if attempt > 0:
-                    print(f"🔄 Retry attempt {attempt + 1}/{retries}...")
-                    time.sleep(2)
-                
-                print(f"🔌 Connecting to {self.port}...")
-                # ESP32-optimized serial configuration to prevent freezes
-                # EXACT ORIGINAL: Simple serial connection like the working script
-                self.serial_conn = serial.Serial(
-                    port=self.port,
-                    baudrate=self.baudrate,
-                    timeout=1
-                )
-                time.sleep(2)  # Wait for ESP32 to restart
-                
-                # Test connection
-                self.send_command("PING")
-                time.sleep(0.1)
-                
-                if self.serial_conn.in_waiting > 0:
-                    response = self.serial_conn.readline().decode().strip()
-                    if "PONG" in response:
-                        print(f"✅ Connected to Bongo Cat on {self.port}")
-                        print(f"🐱 ESP32 Response: {response}")
-                        # Send initial time sync
-                        self.send_initial_sync()
-                        # Update tray connection status
-                        if self.tray:
-                            self.tray.update_connection_status("connected")
-                        return True
-                
-                print(f"✅ Connected to {self.port}")
-                # Send initial time sync
-                self.send_initial_sync()
-                # Update tray connection status
-                if self.tray:
-                    self.tray.update_connection_status("connected")
-                return True
-                
-            except Exception as e:
-                print(f"❌ Connection failed: {e}")
-                self._last_connection_error = e  # Store for notification
-                if attempt < retries - 1:
-                    continue
-                self._report_connection_failure(e)
-                return False
-        
-        # Update tray connection status on failure
-        self._report_connection_failure(self._last_connection_error)
-        return False
+        with self._connect_mutex:
+            if self.port == 'AUTO' or not self.port:
+                detected_port = self.find_esp32_port()
+                if detected_port:
+                    self.port = detected_port
+                else:
+                    print("❌ Could not auto-detect ESP32. Please specify port manually.")
+                    self._last_connection_error = FileNotFoundError("ESP32 not found")
+                    self._report_connection_failure(self._last_connection_error)
+                    return False
+
+            if self.serial_conn is not None:
+                try:
+                    if self.serial_conn.is_open:
+                        self.serial_conn.close()
+                except Exception:
+                    pass
+                self.serial_conn = None
+            
+            for attempt in range(retries):
+                try:
+                    if attempt > 0:
+                        print(f"🔄 Retry attempt {attempt + 1}/{retries}...")
+                        time.sleep(2)
+                    
+                    print(f"🔌 Connecting to {self.port}...")
+                    # ESP32-optimized serial configuration to prevent freezes
+                    # EXACT ORIGINAL: Simple serial connection like the working script
+                    self.serial_conn = serial.Serial(
+                        port=self.port,
+                        baudrate=self.baudrate,
+                        timeout=1
+                    )
+                    time.sleep(2)  # Wait for ESP32 to restart
+                    
+                    # Test connection
+                    self.send_command("PING")
+                    time.sleep(0.1)
+                    
+                    if self.serial_conn.in_waiting > 0:
+                        response = self.serial_conn.readline().decode().strip()
+                        if "PONG" in response:
+                            print(f"✅ Connected to Bongo Cat on {self.port}")
+                            print(f"🐱 ESP32 Response: {response}")
+                            # Send initial time sync
+                            self.send_initial_sync()
+                            # Update tray connection status
+                            if self.tray:
+                                self.tray.update_connection_status("connected")
+                            return True
+                    
+                    print(f"✅ Connected to {self.port}")
+                    # Send initial time sync
+                    self.send_initial_sync()
+                    # Update tray connection status
+                    if self.tray:
+                        self.tray.update_connection_status("connected")
+                    return True
+                    
+                except Exception as e:
+                    print(f"❌ Connection failed: {e}")
+                    self._last_connection_error = e  # Store for notification
+                    try:
+                        if self.serial_conn is not None and self.serial_conn.is_open:
+                            self.serial_conn.close()
+                    except Exception:
+                        pass
+                    self.serial_conn = None
+                    if attempt < retries - 1:
+                        continue
+                    self._report_connection_failure(e)
+                    return False
+            
+            # Update tray connection status on failure
+            self._report_connection_failure(self._last_connection_error)
+            return False
     
     def send_initial_sync(self):
         """Send initial time and system stats when connection is established - EXACT ORIGINAL IMPLEMENTATION"""
@@ -995,3 +1011,4 @@ class BongoCatEngine:
 
 # For backwards compatibility 
 BongoCatController = BongoCatEngine
+
