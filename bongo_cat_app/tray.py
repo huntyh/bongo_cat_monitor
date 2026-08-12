@@ -12,6 +12,8 @@ import sys
 import os
 from typing import Optional, Callable
 
+import startup_manager
+
 class BongoCatSystemTray:
     """System tray integration for Bongo Cat application"""
     
@@ -212,11 +214,15 @@ class BongoCatSystemTray:
 
     
     def get_startup_setting(self):
-        """Get startup setting from config"""
-        if self.config:
-            startup = self.config.get_startup_settings()
-            return startup.get('start_with_windows', True)
-        return False
+        """Get startup setting - reflects actual Windows registry state"""
+        try:
+            return startup_manager.get_startup()
+        except Exception as e:
+            print(f"⚠️ Error reading startup registry, falling back to config: {e}")
+            if self.config:
+                startup = self.config.get_startup_settings()
+                return startup.get('start_with_windows', True)
+            return False
     
     def get_notifications_setting(self):
         """Get notifications setting from config"""
@@ -332,11 +338,19 @@ class BongoCatSystemTray:
         """Toggle startup with Windows setting"""
         if self.config:
             current = self.get_startup_setting()
-            self.config.set_setting('startup', 'start_with_windows', not current)
-            self.config.save_config()
-            
-            status = "enabled" if not current else "disabled"
-            self.show_notification("Startup Setting", f"Start with Windows {status}")
+            new_value = not current
+
+            # Apply the change to the Windows registry
+            success = startup_manager.set_startup(new_value)
+
+            if success:
+                self.config.set_setting('startup', 'start_with_windows', new_value)
+                self.config.save_config()
+
+                status = "enabled" if new_value else "disabled"
+                self.show_notification("Startup Setting", f"Start with Windows {status}")
+            else:
+                self.show_notification("Startup Setting", "Failed to update Windows startup setting")
     
     def toggle_notifications(self, item=None):
         """Toggle notifications setting"""

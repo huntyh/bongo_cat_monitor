@@ -9,6 +9,8 @@ from tkinter import ttk, messagebox
 import threading
 from typing import Optional, Callable
 
+import startup_manager
+
 class BongoCatSettingsGUI:
     """Settings GUI for Bongo Cat application"""
     
@@ -361,7 +363,12 @@ class BongoCatSettingsGUI:
             
             # Load startup settings
             startup = self.config.get_startup_settings()
-            self.widgets['start_with_windows'].set(startup.get('start_with_windows', True))
+            # Reflect the actual Windows registry state for the "start with windows" checkbox
+            try:
+                actual_startup_state = startup_manager.get_startup()
+            except Exception:
+                actual_startup_state = startup.get('start_with_windows', True)
+            self.widgets['start_with_windows'].set(actual_startup_state)
             self.widgets['start_minimized'].set(startup.get('start_minimized', True))
             self.widgets['show_notifications'].set(startup.get('show_notifications', True))
             
@@ -460,9 +467,14 @@ class BongoCatSettingsGUI:
             self.config.set_setting('connection', 'timeout_seconds', self.widgets['conn_timeout'].get())
             
             # Apply startup settings
-            self.config.set_setting('startup', 'start_with_windows', self.widgets['start_with_windows'].get())
+            start_with_windows = self.widgets['start_with_windows'].get()
+            self.config.set_setting('startup', 'start_with_windows', start_with_windows)
             self.config.set_setting('startup', 'start_minimized', self.widgets['start_minimized'].get())
             self.config.set_setting('startup', 'show_notifications', self.widgets['show_notifications'].get())
+
+            # Sync the actual Windows registry entry with the setting
+            if not startup_manager.set_startup(start_with_windows):
+                print("⚠️ Failed to update Windows startup registry entry")
             
             # Apply settings to Arduino immediately if engine is available
             if self.engine and hasattr(self.engine, 'apply_all_config_to_arduino'):
