@@ -291,17 +291,33 @@ class BongoCatSystemTray:
                 self.update_connection_status("connecting")
                 self.show_notification("Bongo Cat", "Attempting to reconnect...")
                 
+                # Stop background retry if running to avoid conflicts
+                if hasattr(self.engine, '_retry_stop_event') and not self.engine._retry_stop_event.is_set():
+                    print("⏹️ Stopping background retry for manual reconnect...")
+                    self.engine._retry_stop_event.set()
+                    self.engine._retry_running = False
+                
                 # Disconnect first if connected
-                if self.engine.serial_conn and self.engine.serial_conn.is_open:
+                if hasattr(self.engine, 'serial_conn') and self.engine.serial_conn and self.engine.serial_conn.is_open:
                     self.engine.disconnect_serial()
+                
+                # Brief pause before reconnect
+                time.sleep(0.5)
+                
+                # Force port re-scan to find new devices
+                self.engine.port = 'AUTO'
                 
                 # Try to reconnect
                 if self.engine.connect_serial():
                     self.update_connection_status("connected")
                     self.show_notification("Bongo Cat", "Successfully reconnected to ESP32!")
                 else:
-                    self.update_connection_status("error")
+                    self.update_connection_status("disconnected")
                     self.show_notification("Bongo Cat", "Failed to reconnect. Check USB connection.")
+                    # Restart background retry for continued attempts
+                    self.engine._retry_stop_event = threading.Event()
+                    self.engine._retry_running = True
+                    print("🔄 Restarting background retry after manual reconnect failure...")
             
             threading.Thread(target=reconnect_thread, daemon=True).start()
     
