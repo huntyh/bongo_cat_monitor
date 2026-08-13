@@ -16,6 +16,82 @@ import psutil
 import datetime
 from typing import Callable, Optional, Dict, Any
 
+
+# Known processes that commonly conflict with ESP32 serial port access
+_CONFLICTING_PROCESSES = [
+    "SignalRgb.exe",
+    "arduino.exe",
+    "IDE.exe",          # Arduino IDE
+    "putty.exe",
+    "PuTTY.exe",
+    "RealTerm.exe",
+    "hterm.exe",
+    "TeraTerm.exe",
+    "teraterm.exe",
+    "mobaxterm.exe",
+    "MobaXTerm.exe",
+    "CoolTerm.exe",
+    "minicom",
+    "picocom",
+]
+
+
+def _get_conflicting_processes() -> list:
+    """Check for known processes that may conflict with ESP32 serial port access.
+    
+    Returns a list of running conflicting process names (empty list if none found).
+    """
+    found = []
+    try:
+        for proc in psutil.process_iter(['pid', 'name']):
+            try:
+                proc_name = proc.info['name']
+                if proc_name and proc_name.lower() in [p.lower() for p in _CONFLICTING_PROCESSES]:
+                    if proc_name not in found:
+                        found.append(proc_name)
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                pass
+    except Exception:
+        pass
+    return found
+
+
+def _get_user_friendly_error(exception: Exception) -> str:
+    """Translate a serial connection exception into a user-friendly message.
+    
+    Maps common serial errors to readable explanations and detects conflicting
+    applications that may be holding the port.
+    """
+    error_str = str(exception).lower()
+    
+    # Access Denied / Port in use
+    if isinstance(exception, PermissionError) or 'access denied' in error_str or 'permission' in error_str:
+        conflicting = _get_conflicting_processes()
+        if conflicting:
+            names = ", ".join(conflicting)
+            return f"Serial port is possibly in use by: {names}.\nPlease close those programs and try again."
+        return "Serial port is in use by another program.\nPlease close any other program using this port and try again."
+    
+    # Port not found / device unplugged
+    if isinstance(exception, FileNotFoundError) or 'no such file' in error_str or 'no such port' in error_str or 'not found' in error_str:
+        return "ESP32 device not found.\nPlease plug in your ESP32 and try again."
+    
+    # Serial exception - various sub-types
+    if isinstance(exception, serial.SerialException):
+        if 'could not open' in error_str:
+            return f"Could not open serial port: {exception}\nThe port may be in use by another program."
+        if 'invalid' in error_str:
+            return f"Invalid serial port configuration: {exception}\nPlease check your COM port settings."
+        return f"Serial communication error: {exception}"
+    
+    # Timeout
+    if 'timeout' in error_str:
+        return "Connection timed out.\nPlease check the ESP32 is properly connected."
+    
+    # Generic fallback - include the original message
+    return f"Connection failed: {exception}"
+
+
 class BongoCatEngine:
     """Bongo Cat engine using proven original implementation with configuration support"""
     
@@ -118,6 +194,10 @@ class BongoCatEngine:
         # Configuration change callbacks
         self.config_callbacks: Dict[str, Callable] = {}
         
+        # Connection notification state
+        self._last_connection_error = None  # Stores the last connection exception
+        self._connection_notified = False   # Track if we already showed a notification this session
+        
         # Setup configuration callbacks if config manager provided
         if self.config:
             self.config.add_change_callback(self._on_config_change)
@@ -126,6 +206,42 @@ class BongoCatEngine:
         """Set reference to system tray for status updates"""
         self.tray = tray
         print("🔗 Engine connected to system tray for status updates")
+    
+    def show_connection_notification(self, success: bool, exception: Exception = None):
+        """Show a desktop notification for connection status.
+        
+        Only shows notifications on failure at startup, or on success after a previous failure.
+        Silent on initial success at startup.
+        
+        Args:
+            success: True if connection succeeded, False if it failed.
+            exception: The exception that caused failure (only used when success=False).
+        """
+        if success:
+            # Only notify on success if we had a previous failure
+            if not self._connection_notified:
+                return  # Silent success on startup
+            # We had a previous failure, now succeeded - notify
+            if self.tray:
+                self.tray.show_notification(
+                    title="Bongo Cat Connected",
+                    message="Successfully connected to ESP32!"
+                )
+            print("🔔 Background retry succeeded - notification sent")
+        else:
+            # Connection failed - always notify
+            if exception:
+                message = _get_user_friendly_error(exception)
+            else:
+                message = "Could not connect to ESP32."
+            if self.tray:
+                self.tray.show_notification(
+                    title="Bongo Cat Connection Failed",
+                    message=message
+                )
+            print(f"🔔 Connection failed - notification sent: {message}")
+        
+        self._connection_notified = True
     
     def _on_config_change(self, key: str, value: Any):
         """Handle configuration changes - NO SERIAL COMMANDS to prevent thread conflicts"""
@@ -280,6 +396,7 @@ class BongoCatEngine:
                 
             except Exception as e:
                 print(f"❌ Connection failed: {e}")
+                self._last_connection_error = e  # Store for notification
                 if attempt < retries - 1:
                     continue
                 # Update tray connection status on failure
@@ -788,6 +905,8 @@ class BongoCatEngine:
         print("-" * 65)
         
         if not self.connect_serial():
+            # Show notification on startup failure only
+            self.show_connection_notification(success=False, exception=self._last_connection_error)
             return False
         
         self.running = True
