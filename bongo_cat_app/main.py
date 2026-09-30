@@ -172,6 +172,10 @@ class BongoCatApplication:
                 if self.engine.connect_serial():
                     print("✅ Connected! Starting monitoring...")
                     self.engine._retry_running = False
+                    # CRITICAL: Set running flag before starting animation thread
+                    self.engine.running = True
+                    # Show notification on successful background reconnect
+                    self.engine.show_connection_notification(success=True)
                     # Update tray status
                     if self.tray:
                         self.tray.update_connection_status("connected")
