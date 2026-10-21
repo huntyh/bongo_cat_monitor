@@ -52,11 +52,9 @@ class BongoCatApplication:
             self.config = ConfigManager()
 
             # Sync Windows registry with the config setting for "start with windows"
+            # (only for the built exe; respects a "Disabled" set in Task Manager)
             print("🔄 Syncing Windows startup registry...")
-            startup_settings = self.config.get_startup_settings()
-            start_with_windows = startup_settings.get('start_with_windows', True)
-            if not startup_manager.set_startup(start_with_windows):
-                print("⚠️ Warning: Could not sync Windows startup registry")
+            startup_manager.sync_with_config(self.config)
 
             # Initialize engine with configuration
             print("🔧 Initializing Bongo Cat Engine...")
