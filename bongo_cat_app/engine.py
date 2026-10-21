@@ -21,7 +21,7 @@ from typing import Callable, Optional, Dict, Any
 _CONFLICTING_PROCESSES = [
     "SignalRgb.exe",
     "arduino.exe",
-    "IDE.exe",          # Arduino IDE
+    "Arduino IDE.exe",  # Arduino IDE 2.x
     "putty.exe",
     "PuTTY.exe",
     "RealTerm.exe",
@@ -42,11 +42,12 @@ def _get_conflicting_processes() -> list:
     Returns a list of running conflicting process names (empty list if none found).
     """
     found = []
+    conflicting_lower = {p.lower() for p in _CONFLICTING_PROCESSES}
     try:
         for proc in psutil.process_iter(['pid', 'name']):
             try:
                 proc_name = proc.info['name']
-                if proc_name and proc_name.lower() in [p.lower() for p in _CONFLICTING_PROCESSES]:
+                if proc_name and proc_name.lower() in conflicting_lower:
                     if proc_name not in found:
                         found.append(proc_name)
             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
@@ -198,6 +199,7 @@ class BongoCatEngine:
         # Connection notification state
         self._last_connection_error = None  # Stores the last connection exception
         self._connection_notified = False   # Track if we already showed a notification this session
+        self.last_connection_error_message = None  # Friendly text of the last failure (persists in tray)
         
         # Setup configuration callbacks if config manager provided
         if self.config:
@@ -238,11 +240,27 @@ class BongoCatEngine:
             if self.tray:
                 self.tray.show_notification(
                     title="Bongo Cat Connection Failed",
-                    message=message
+                    message=f"{message}\nHover or right-click the tray icon to see this again."
                 )
             print(f"🔔 Connection failed - notification sent: {message}")
         
         self._connection_notified = True
+    
+    def _report_connection_failure(self, exception: Exception = None):
+        """Remember why the connection failed and show it persistently in the tray.
+
+        Toast notifications vanish after a few seconds, so the reason is also
+        kept in the tray tooltip, the tray menu and a red badge on the icon
+        until the next successful connection.
+        """
+        if exception is not None:
+            message = _get_user_friendly_error(exception)
+        else:
+            message = "Could not connect to ESP32."
+        self.last_connection_error_message = message
+        if self.tray:
+            # First line is the short reason, e.g. "Serial port is possibly in use by: SignalRgb.exe."
+            self.tray.update_connection_status("error", detail=message.split("\n")[0])
     
     def _on_config_change(self, key: str, value: Any):
         """Handle configuration changes - NO SERIAL COMMANDS to prevent thread conflicts"""
@@ -354,6 +372,8 @@ class BongoCatEngine:
                     self.port = detected_port
                 else:
                     print("❌ Could not auto-detect ESP32. Please specify port manually.")
+                    self._last_connection_error = FileNotFoundError("ESP32 not found")
+                    self._report_connection_failure(self._last_connection_error)
                     return False
 
             if self.serial_conn is not None:
@@ -415,13 +435,11 @@ class BongoCatEngine:
                     self.serial_conn = None
                     if attempt < retries - 1:
                         continue
-                    if self.tray:
-                        self.tray.update_connection_status("error")
+                    self._report_connection_failure(e)
                     return False
             
             # Update tray connection status on failure
-            if self.tray:
-                self.tray.update_connection_status("error")
+            self._report_connection_failure(self._last_connection_error)
             return False
     
     def send_initial_sync(self):
