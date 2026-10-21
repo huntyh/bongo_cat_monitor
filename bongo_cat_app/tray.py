@@ -28,6 +28,8 @@ class BongoCatSystemTray:
         
         # Status tracking
         self.connection_status = "disconnected"
+        self.connection_error = None   # Short reason of the last failed connection (cleared on success)
+        self.base_icon_image = None    # Normal tray icon; a red-badged copy is shown while in error
         self.last_wpm = 0
         self.typing_active = False
         
@@ -91,6 +93,8 @@ class BongoCatSystemTray:
             # Fallback to generated icon
             icon_image = self.create_cat_icon()
         
+        self.base_icon_image = icon_image.convert('RGBA')
+        
         # Create pystray icon
         self.icon = pystray.Icon(
             "BongoCat",
@@ -98,6 +102,20 @@ class BongoCatSystemTray:
             "Bongo Cat - Typing Monitor",
             menu=self.create_menu()
         )
+    
+    def create_error_icon(self):
+        """Return the tray icon with a red "!" badge, used while the ESP32 is not connected"""
+        image = self.base_icon_image.copy()
+        size = image.size[0]
+        draw = ImageDraw.Draw(image)
+        badge = size // 2
+        x0, y0 = size - badge, size - badge
+        draw.ellipse([x0, y0, size - 1, size - 1], fill=(220, 40, 40, 255), outline=(255, 255, 255, 255), width=2)
+        cx = x0 + badge // 2
+        bar_w = max(2, badge // 7)
+        draw.rectangle([cx - bar_w // 2, y0 + badge // 5, cx + bar_w // 2, y0 + badge * 3 // 5], fill=(255, 255, 255, 255))
+        draw.rectangle([cx - bar_w // 2, y0 + badge * 7 // 10, cx + bar_w // 2, y0 + badge * 4 // 5], fill=(255, 255, 255, 255))
+        return image
     
     def create_cat_icon(self, size=64):
         """Create a simple cat icon programmatically"""
@@ -153,6 +171,13 @@ class BongoCatSystemTray:
                 "Bongo Cat Monitor",
                 self.show_about,
                 default=True
+            ),
+            item(
+                # Persistent copy of the failure reason, since notifications disappear quickly
+                lambda item: f"⚠ {self.connection_error}",
+                None,
+                enabled=False,
+                visible=lambda item: bool(self.connection_error) and self.connection_status != "connected"
             ),
             pystray.Menu.SEPARATOR,
             item(
@@ -325,6 +350,7 @@ class BongoCatSystemTray:
         """Disconnect from ESP32"""
         if self.engine:
             self.engine.disconnect_serial()
+            self.connection_error = None  # Manual disconnect is not an error
             self.update_connection_status("disconnected")
             self.show_notification("Bongo Cat", "Disconnected from ESP32")
     
@@ -358,18 +384,37 @@ class BongoCatSystemTray:
         else:
             sys.exit(0)
     
-    def update_connection_status(self, status: str):
-        """Update connection status"""
-        old_status = self.connection_status
-        self.connection_status = status
+    def update_connection_status(self, status: str, detail: Optional[str] = None):
+        """Update connection status.
 
+        detail: short reason for a failure. It is kept (also through "connecting"
+        retries) until the next successful connection, so the user can still see
+        why the cat is dead after the toast notification has disappeared.
+        """
+        self.connection_status = status
+        if status == "connected":
+            self.connection_error = None
+        elif detail:
+            self.connection_error = detail
         
-        # Update icon tooltip
-        status_text = self.get_connection_status().replace('🟢 ', '').replace('🟡 ', '').replace('🔴 ', '').replace('❌ ', '')
-        if self.icon:
-            self.icon.title = f"Bongo Cat - {status_text}"
-            # Refresh menu to update connection status display
-            self.refresh_menu()
+        if not self.icon:
+            return
+        try:
+            if self.connection_error and status != "connected":
+                prefix = "Retrying" if status == "connecting" else "Not connected"
+                title = f"Bongo Cat - {prefix}: {self.connection_error}"
+                image = self.create_error_icon()
+            else:
+                title = f"Bongo Cat - {self.get_connection_status()}"
+                image = self.base_icon_image
+            # Windows limits tray tooltips to 127 characters
+            self.icon.title = title if len(title) <= 127 else title[:124] + "..."
+            if image is not None:
+                self.icon.icon = image
+        except Exception as e:
+            print(f"⚠️ Tray status update error: {e}")
+        # Refresh menu to update connection status display
+        self.refresh_menu()
     
     def update_typing_status(self, active: bool, wpm: float = 0):
         """Update typing status"""
